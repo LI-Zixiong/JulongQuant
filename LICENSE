@@ -1,0 +1,73 @@
+Non-Commercial Research and Educational Use License
+Version 1.0
+
+Copyright (c) 2026 DilessBear
+
+1. Permission
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this repository, source code, documentation, notebooks, configuration files, models, scripts, and related materials (the "Project"), to use, copy, modify, and study the Project solely for personal, academic, research, and other non-commercial purposes, subject to the terms below.
+
+2. Non-Commercial Use Only
+
+The Project may not be used for any commercial purpose without prior written permission from the copyright holder.
+
+Commercial purposes include, but are not limited to:
+
+- using the Project, in whole or in part, in any paid product, service, platform, fund, trading system, consulting service, investment advisory service, SaaS product, or proprietary trading operation;
+- selling, licensing, sublicensing, renting, or otherwise monetizing the Project or derivative works based on it;
+- using the Project to provide services to clients, customers, employers, or other third parties for compensation;
+- integrating the Project into commercial software, infrastructure, trading pipelines, or internal business systems;
+- using the Project for commercial investment management, asset management, securities analysis, portfolio management, or automated trading.
+
+For any commercial use, please contact the copyright holder and obtain explicit written authorization.
+
+3. Attribution
+
+If you use, copy, modify, publish, or distribute the Project or any derivative work for permitted non-commercial purposes, you must retain this license notice and give appropriate credit to the original authors.
+
+4. No Investment Advice
+
+The Project is provided solely for educational, academic, and research purposes.
+
+Nothing in the Project constitutes, or should be interpreted as, financial advice, investment advice, trading advice, securities recommendation, portfolio recommendation, solicitation, offer, or endorsement of any financial instrument, trading strategy, investment product, or transaction.
+
+The authors are not investment advisers, financial advisers, broker-dealers, or fiduciaries by virtue of publishing this Project.
+
+Any examples, backtests, simulations, signals, model outputs, charts, reports, or discussions contained in the Project are illustrative only and do not represent a recommendation to buy, sell, hold, short, or trade any security, asset, derivative, cryptocurrency, fund, or financial instrument.
+
+5. No Guarantee of Performance
+
+Past performance, simulated performance, backtested performance, paper trading results, or model evaluation results do not guarantee future results.
+
+Backtests and simulations may be affected by assumptions, data quality issues, survivorship bias, look-ahead bias, transaction costs, slippage, liquidity constraints, market impact, overfitting, and other limitations.
+
+The authors make no representation or warranty that any strategy, model, signal, or method included in the Project will be profitable, reliable, accurate, complete, or suitable for any particular purpose.
+
+6. User Responsibility and Risk
+
+You are solely responsible for any use of the Project.
+
+Any trading or investment decision made based on the Project, directly or indirectly, is made entirely at your own risk.
+
+You should conduct your own independent research and consult qualified financial, legal, tax, or other professional advisers before making any investment or trading decision.
+
+7. No Warranty
+
+THE PROJECT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, COMPLETENESS, RELIABILITY, OR AVAILABILITY.
+
+8. Limitation of Liability
+
+IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, CONTRIBUTORS, OR AFFILIATED PARTIES BE LIABLE FOR ANY CLAIM, DAMAGES, LOSSES, LIABILITIES, COSTS, EXPENSES, OR OTHER CONSEQUENCES ARISING FROM OR RELATED TO THE PROJECT, INCLUDING BUT NOT LIMITED TO TRADING LOSSES, INVESTMENT LOSSES, LOST PROFITS, DATA LOSS, BUSINESS INTERRUPTION, OR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES.
+
+9. Third-Party Data and Dependencies
+
+The Project may depend on third-party data, APIs, libraries, models, or services. Such third-party materials are subject to their own licenses, terms of use, and restrictions.
+
+This license does not grant any rights to third-party data or third-party intellectual property.
+
+10. Termination
+
+Any violation of this license automatically terminates the rights granted to you under this license. Upon termination, you must stop using, copying, modifying, distributing, or otherwise exploiting the Project.
+11. Reservation of Rights
+
+All rights not expressly granted under this license are reserved by the copyright holder.
