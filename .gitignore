@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Large data files (not committed to git)
+dataset/input/*.parquet
+dataset/input/*.h5
+dataset/input/*.hdf5
+dataset/input/*.csv
+dataset/processed/*.parquet
+dataset/processed/*.h5
+dataset/processed/*.hdf5
+dataset/processed/*.csv
+dataset/output/*
