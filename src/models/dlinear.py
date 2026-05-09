@@ -21,12 +21,32 @@ class DLinearConfig:
 
     dropout:
         Dropout rate for regularization.
+
+    @JulongQuant
     """
 
     seq_len: int = 60
     n_features: int = 12
     moving_avg_kernel: int = 25
     dropout: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.moving_avg_kernel < 1:
+            raise ValueError(
+                f"moving_avg_kernel must be >= 1, but got {self.moving_avg_kernel}"
+            )
+        if self.seq_len < 1:
+            raise ValueError(
+                f"seq_len must be >= 1, but got {self.seq_len}"
+            )
+        if self.n_features < 1:
+            raise ValueError(
+                f"n_features must be >= 1, but got {self.n_features}"
+            )
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError(
+                f"dropout must be in [0.0, 1.0), but got {self.dropout}"
+            )
 
 
 class MovingAverage(nn.Module):
@@ -42,6 +62,10 @@ class MovingAverage(nn.Module):
 
     def __init__(self, kernel_size: int) -> None:
         super().__init__()
+        if kernel_size < 1:
+            raise ValueError(
+                f"kernel_size must be >= 1, but got {kernel_size}"
+            )
         self.kernel_size = kernel_size
 
         if kernel_size > 1:
@@ -125,6 +149,12 @@ class DLinearPanelRegressor(nn.Module):
 
         nn.init.zeros_(self.seasonal_linear.bias)
         nn.init.zeros_(self.trend_linear.bias)
+        
+        # Initialize feature_head layers consistently
+        for layer in self.feature_head:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

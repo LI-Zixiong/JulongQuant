@@ -227,3 +227,10 @@ dataset/processed/*.h5
 dataset/processed/*.hdf5
 dataset/processed/*.csv
 dataset/output/*
+
+# Dataset files
+dataset/
+!dataset/input/.gitkeep
+!dataset/output/.gitkeep
+!dataset/processed/.gitkeep
+!dataset/input/README.md
