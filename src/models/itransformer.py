@@ -5,7 +5,7 @@ from torch import nn
 
 
 @dataclass
-class iTransformerConfig:
+class ITransformerConfig:
     """
     iTransformer model config for panel factor regression.
 
@@ -64,7 +64,7 @@ class iTransformerConfig:
             )
 
 
-class iTransformerRegressor(nn.Module):
+class ITransformerRegressor(nn.Module):
     """
     iTransformer-style model for stock panel factor regression.
 
@@ -133,13 +133,16 @@ class iTransformerRegressor(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        nn.init.xavier_uniform_(self.embedding.weight)
-        nn.init.zeros_(self.embedding.bias)
-
-        for layer in self.head:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.zeros_(layer.bias)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                if getattr(m, "weight", None) is not None:
+                    nn.init.ones_(m.weight)
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -188,12 +191,12 @@ class iTransformerRegressor(nn.Module):
 
 
 def build_itransformer_model(
-    config: iTransformerConfig,
-) -> iTransformerRegressor:
+    config: ITransformerConfig,
+) -> ITransformerRegressor:
     """
     Helper function for building the iTransformer model from config.
     """
-    return iTransformerRegressor(
+    return ITransformerRegressor(
         seq_len=config.seq_len,
         n_features=config.n_features,
         d_model=config.d_model,
@@ -206,7 +209,7 @@ def build_itransformer_model(
 
 if __name__ == "__main__":
     # Quick smoke test.
-    config = iTransformerConfig(
+    config = ITransformerConfig(
         seq_len=60,
         n_features=12,
         d_model=128,

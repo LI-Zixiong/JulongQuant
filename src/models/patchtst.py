@@ -39,6 +39,7 @@ class PatchTSTConfig:
     n_features: int = 12
     patch_len: int = 8
     stride: int = 4
+    pad_mode: str = "strict"  # one of "strict", "pad", "truncate"
     d_model: int = 128
     nhead: int = 4
     num_layers: int = 2
@@ -58,11 +59,14 @@ class PatchTSTConfig:
             raise ValueError(
                 f"patch_len ({self.patch_len}) must not exceed seq_len ({self.seq_len})"
             )
+        if self.pad_mode not in {"strict", "pad", "truncate"}:
+            raise ValueError("pad_mode must be one of 'strict', 'pad', or 'truncate'")
+
         remaining = (self.seq_len - self.patch_len) % self.stride
-        if remaining != 0:
+        if remaining != 0 and self.pad_mode == "strict":
             raise ValueError(
                 f"(seq_len - patch_len) % stride must be 0 to avoid "
-                f"discarding trailing timesteps, but got remainder={remaining} "
+                f"discarding trailing timesteps under pad_mode='strict', got remainder={remaining} "
                 f"(seq_len={self.seq_len}, patch_len={self.patch_len}, "
                 f"stride={self.stride})"
             )
@@ -108,6 +112,7 @@ class PatchTSTRegressor(nn.Module):
         n_features: int,
         patch_len: int = 8,
         stride: int = 4,
+        pad_mode: str = "strict",
         d_model: int = 128,
         nhead: int = 4,
         num_layers: int = 2,
@@ -120,20 +125,24 @@ class PatchTSTRegressor(nn.Module):
         self.n_features = n_features
         self.patch_len = patch_len
         self.stride = stride
+        self.pad_mode = pad_mode
 
         if d_model % nhead != 0:
             raise ValueError(
                 f"d_model ({d_model}) must be divisible by nhead ({nhead})"
             )
 
-        if (seq_len - patch_len) % stride != 0:
-            raise ValueError(
-                f"(seq_len - patch_len) % stride must be 0, but got "
-                f"remainder={(seq_len - patch_len) % stride} "
-                f"(seq_len={seq_len}, patch_len={patch_len}, stride={stride})"
-            )
+        # compute number of patches depending on pad_mode
+        rem = (seq_len - patch_len) % stride
+        if rem == 0:
+            effective_seq = seq_len
+        elif pad_mode == "pad":
+            pad_right = (stride - rem) % stride
+            effective_seq = seq_len + pad_right
+        else:  # truncate
+            effective_seq = seq_len - rem
 
-        self.num_patches = (seq_len - patch_len) // stride + 1
+        self.num_patches = (effective_seq - patch_len) // stride + 1
         if self.num_patches < 1:
             raise ValueError(
                 f"seq_len={seq_len}, patch_len={patch_len}, stride={stride} "
@@ -172,13 +181,16 @@ class PatchTSTRegressor(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        nn.init.xavier_uniform_(self.patch_embedding.weight)
-        nn.init.zeros_(self.patch_embedding.bias)
-
-        for layer in self.head:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.zeros_(layer.bias)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                if getattr(m, "weight", None) is not None:
+                    nn.init.ones_(m.weight)
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -211,6 +223,13 @@ class PatchTSTRegressor(nn.Module):
 
         # Instance norm along time per feature.
         x = self.instance_norm(x)  # [B, C, L]
+
+        # Optionally pad trailing timesteps so patches cover full range.
+        rem = (L - self.patch_len) % self.stride
+        if rem != 0 and self.pad_mode == "pad":
+            pad_right = (self.stride - rem) % self.stride
+            pad_vals = x[:, :, -1:].repeat(1, 1, pad_right)
+            x = torch.cat([x, pad_vals], dim=2)
 
         # Unfold each feature's time series into patches.
         # [B, C, L] -> [B, C, num_patches, patch_len]

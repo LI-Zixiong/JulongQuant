@@ -4,8 +4,8 @@ from src.models.dlinear import (
     build_dlinear_model,
 )
 from src.models.itransformer import (
-    iTransformerConfig,
-    iTransformerRegressor,
+    ITransformerConfig,
+    ITransformerRegressor,
     build_itransformer_model,
 )
 from src.models.patchtst import (
@@ -33,8 +33,8 @@ __all__ = [
     "DLinearConfig",
     "DLinearPanelRegressor",
     "build_dlinear_model",
-    "iTransformerConfig",
-    "iTransformerRegressor",
+    "ITransformerConfig",
+    "ITransformerRegressor",
     "build_itransformer_model",
     "PatchTSTConfig",
     "PatchTSTRegressor",
