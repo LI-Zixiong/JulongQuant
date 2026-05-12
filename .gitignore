@@ -227,3 +227,7 @@ dataset/output/*
 !dataset/input/README.md
 !dataset/processed/.gitkeep
 !dataset/output/.gitkeep
+
+# Project documentation (local only, not for GitHub)
+CLAUDE.md
+PROJECT_DIAGNOSTIC_REPORT.md
