@@ -231,3 +231,10 @@ dataset/output/*
 # Project documentation (local only, not for GitHub)
 CLAUDE.md
 PROJECT_DIAGNOSTIC_REPORT.md
+
+outputs/
+dataset/output/
+*.pt
+*.pth
+*.ckpt
+*.model
