@@ -29,7 +29,8 @@ JulongQuant/
 │   │   ├── train_tabular.py      LightGBM & XGBoost training
 │   │   └── train_torch.py        PyTorch sequence model training
 │   ├── backtest/         #   Backtesting engine (planned)
-│   ├── predict/          #   Inference (planned)
+│   ├── predict/          #   Prediction
+│   │   └── generate_predictions.py   Model inference & output
 │   └── utils/            #   Utilities
 │       ├── seed.py               Reproducibility
 │       └── logger.py             Structured logging

@@ -238,3 +238,6 @@ dataset/output/
 *.pth
 *.ckpt
 *.model
+
+# Claude Code local settings
+.claude/

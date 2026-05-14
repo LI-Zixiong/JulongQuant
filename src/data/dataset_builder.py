@@ -63,7 +63,7 @@ class PanelDatasetBuilder:
         feature_cols: Sequence[str],
         target_col: str,
         date_col: str = "date",
-        stock_col: str = "stock",
+        stock_col: str = "stock_id",
         seq_len: int = 60,
         meta_cols: Optional[Sequence[str]] = None,
     ) -> None:
