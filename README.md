@@ -11,10 +11,7 @@ JulongQuant/
 ├── reports/              # Backtest reports and analysis
 │
 ├── scripts/              # Runnable entry points
-│   ├── run_train_dlinear.py
-│   ├── run_train_xgboost.py
-│   ├── run_backtest.py
-│   └── run_predict.py
+│   └── check_data_to_model.py    End-to-end smoke test
 │
 ├── src/                  # Source code
 │   ├── data/             #   Data pipeline
@@ -22,15 +19,22 @@ JulongQuant/
 │   │   ├── preprocess.py         Factor preprocessing
 │   │   └── dataset_builder.py    Sliding window dataset
 │   ├── models/           #   Model implementations (6 models)
+│   │   ├── lightgbm_model.py     LightGBM (tabular)
+│   │   ├── xgboost_model.py      XGBoost (tabular)
+│   │   ├── dlinear.py            DLinear (sequence)
+│   │   ├── itransformer.py       iTransformer (sequence)
+│   │   ├── patchtst.py           PatchTST (sequence)
+│   │   └── tsmixer.py            TSMixer (sequence)
 │   ├── train/            #   Training logic
-│   ├── backtest/         #   Backtesting engine
-│   │   ├── engine.py             Backtest main loop
-│   │   ├── metrics.py            Performance metrics
-│   │   └── portfolio.py          Portfolio construction
-│   ├── predict/          #   Inference
-│   └── utils/            #   Utilities (logging, seeding)
+│   │   ├── train_tabular.py      LightGBM & XGBoost training
+│   │   └── train_torch.py        PyTorch sequence model training
+│   ├── backtest/         #   Backtesting engine (planned)
+│   ├── predict/          #   Inference (planned)
+│   └── utils/            #   Utilities
+│       ├── seed.py               Reproducibility
+│       └── logger.py             Structured logging
 │
-├── tests/                # Unit tests
+├── tests/                # Unit tests (planned)
 │   ├── test_data_alignment.py
 │   ├── test_no_future_leakage.py
 │   └── test_portfolio_weight.py
