@@ -1,0 +1,378 @@
+"""
+Training utilities for PyTorch time-series models.
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from src.data.dataset_builder import BuiltDataset
+
+@dataclass
+class TorchTrainConfig:
+    """
+    Configuration for PyTorch model training.
+    """
+
+    epochs: int = 20
+    batch_size: int = 256
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    device: str = 'auto'
+    shuffle_train: bool = True
+
+    def __post_init__(self) -> None:
+        if self.epochs <= 0:
+            raise ValueError(f"Invalid epochs={self.epochs}. Expected a positive integer.")
+        
+        if self.batch_size <= 0:
+            raise ValueError(f"Invalid batch_size={self.batch_size}. Expected a positive integer.")
+        
+        if self.learning_rate <= 0:
+            raise ValueError(f"Invalid learning_rate={self.learning_rate}. Expected a positive number.")
+        
+        if self.weight_decay < 0:
+            raise ValueError(f"Invalid weight_decay={self.weight_decay}. Expected a non-negative number.")
+        
+        if self.device not in ('auto', 'cpu', 'cuda'):
+            raise ValueError(f"Invalid device={self.device!r}. Expected 'auto', 'cpu', or 'cuda'.")
+    
+def _resolve_device(device: str) -> torch.device:
+    if device == 'auto':
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if device == 'cuda' and not torch.cuda.is_available():
+        raise ValueError("CUDA device specified but not available.")
+    
+    return torch.device(device)
+
+def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = np.asarray(y_true).reshape(-1)
+    y_pred = np.asarray(y_pred).reshape(-1)
+
+    if y_true.shape[0] != y_pred.shape[0]:
+        raise ValueError(
+            f"Shape mismatch: y_true has shape {y_true.shape}, "
+            f"but y_pred has shape {y_pred.shape}."
+        )
+    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+
+def _validate_torch_dataset(dataset: BuiltDataset, name: str) -> None:
+    if not isinstance(dataset, BuiltDataset):
+        raise ValueError(
+            f"Invalid {name} dataset. Expected a BuiltDataset instance, "
+            f"but got {type(dataset).__name__}."
+        )
+    
+    if dataset.X.ndim != 3:
+        raise ValueError(
+            f"Invalid {name} dataset features. Expected a 3D array, "
+            f"but got an array with shape {dataset.X.shape}."
+        )
+    
+    if dataset.y.ndim != 1:
+        raise ValueError(
+            f"Invalid {name} dataset targets. Expected a 1D array, "
+            f"but got an array with shape {dataset.y.shape}."
+        )
+    
+    if dataset.X.shape[0] != dataset.y.shape[0]:
+        raise ValueError(
+            f"Sample size mismatch in {name} dataset. "
+            f"Features have {dataset.X.shape[0]} samples, "
+            f"but targets have {dataset.y.shape[0]} samples."
+        )
+    
+    if len(dataset.meta) != dataset.X.shape[0]:
+        raise ValueError(
+            f"{name}.meta and {name}.X length mismatch: "
+            f"{len(dataset.meta)} vs {dataset.X.shape[0]}"
+        )
+    
+    if dataset.X.shape[0] == 0:
+        raise ValueError(f"{name} dataset is empty. No samples found.")
+    
+def _build_dataloader(
+    dataset: BuiltDataset,
+    batch_size: int,
+    shuffle: bool,
+) -> DataLoader:
+    X_tensor = torch.as_tensor(dataset.X, dtype=torch.float32)
+    y_tensor = torch.as_tensor(dataset.y, dtype=torch.float32).reshape(-1, 1)
+
+    tensor_dataset = TensorDataset(X_tensor, y_tensor)
+
+    return DataLoader(
+        tensor_dataset, 
+        batch_size=batch_size, 
+        shuffle=shuffle
+    )
+
+def _train_one_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    device: torch.device
+) -> float:
+    model.train()
+
+    total_loss = 0.0
+    total_samples = 0
+
+    for batch_X, batch_y in dataloader:
+        batch_X = batch_X.to(device)
+        batch_y = batch_y.to(device)
+
+        optimizer.zero_grad()
+
+        pred = model(batch_X)
+
+        if pred.ndim == 1:
+            pred = pred.reshape(-1, 1)
+
+        loss = criterion(pred, batch_y)
+
+        loss.backward()
+        optimizer.step()
+
+        batch_size = batch_X.shape[0]
+        total_loss += loss.item() * batch_size
+        total_samples += batch_size
+
+    return total_loss / total_samples if total_samples > 0 else 0.0
+
+def _evaluate(
+    model: nn.Module,
+    data_loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device
+) -> tuple[float, float]:
+    model.eval()
+
+    total_loss = 0.0
+    total_samples = 0
+
+    all_preds: list[np.ndarray] = []
+    all_targets: list[np.ndarray] = []
+
+    with torch.no_grad():
+        for batch_X, batch_y in data_loader:
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+
+            pred = model(batch_X)
+
+            if pred.ndim == 1:
+                pred = pred.reshape(-1, 1)
+
+            loss = criterion(pred, batch_y)
+
+            batch_size = batch_X.shape[0]
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+            all_preds.append(pred.cpu().numpy())
+            all_targets.append(batch_y.cpu().numpy())
+    
+    y_pred = np.concatenate(all_preds, axis=0).reshape(-1)
+    y_true = np.concatenate(all_targets, axis=0).reshape(-1)
+
+    loss_avg = total_loss / total_samples if total_samples > 0 else 0.0
+    rmse = _rmse(y_true, y_pred)
+
+    return loss_avg, rmse
+
+def train_torch_model(
+    model: nn.Module,
+    train_data: BuiltDataset,
+    valid_data: BuiltDataset,
+    output_dir: str | Path,
+    config: TorchTrainConfig | None = None,
+    ) -> dict[str, float | int | str]:
+    """
+    Train a PyTorch model on sequence BuiltDataset splits.
+
+    This function is designed for PyTorch time-series models such as
+    DLinear, TSMixer, PatchTST, and iTransformer.
+
+    Parameters
+    ----------
+    model : nn.Module
+        PyTorch model to train.
+    train_data : BuiltDataset
+        Training split with 3D X and 1D y.
+    valid_data : BuiltDataset
+        Validation split with 3D X and 1D y.
+    output_dir : str or Path
+        Directory used to save the best model checkpoint.
+    config : TorchTrainConfig, optional
+        Training configuration.
+
+    Returns
+    -------
+    dict
+        Training summary containing loss, RMSE, best epoch, and checkpoint path.
+    """
+    if config is None:
+        config = TorchTrainConfig()
+
+    if not isinstance(model, nn.Module):
+        raise ValueError(
+            f"Invalid model. Expected a PyTorch nn.Module instance, "
+            f"but got {type(model).__name__}."
+        )
+
+    _validate_torch_dataset(train_data, "train_data")
+    _validate_torch_dataset(valid_data, "valid_data")
+
+    device = _resolve_device(config.device)
+    model = model.to(device)
+
+    train_loader = _build_dataloader(
+        dataset=train_data,
+        batch_size=config.batch_size,
+        shuffle=config.shuffle_train,
+    )
+
+    valid_loader = _build_dataloader(
+        dataset=valid_data,
+        batch_size=config.batch_size,
+        shuffle=False,
+    )
+
+    criterion = nn.MSELoss()
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    model_name = model.__class__.__name__
+    checkpoint_path = output_dir / f"{model_name}.pt"
+
+    best_valid_rmse = float("inf")
+    best_epoch = -1
+
+    final_train_loss = float("nan")
+    final_valid_loss = float("nan")
+    final_valid_rmse = float("nan")
+
+    for epoch in range(1, config.epochs + 1):
+        train_loss = _train_one_epoch(
+            model=model,
+            dataloader=train_loader,
+            optimizer=optimizer,
+            criterion=criterion,
+            device=device
+        )
+
+        valid_loss, valid_rmse = _evaluate(
+            model=model,
+            data_loader=valid_loader,
+            criterion=criterion,
+            device=device
+        )
+
+        final_train_loss = train_loss
+        final_valid_loss = valid_loss
+        final_valid_rmse = valid_rmse
+
+        if not np.isfinite(valid_rmse):
+            continue
+
+        if valid_rmse < best_valid_rmse:
+            best_valid_rmse = valid_rmse
+            best_epoch = epoch
+            torch.save(model.state_dict(), checkpoint_path)
+
+    if best_epoch < 1 or not checkpoint_path.exists():
+        raise RuntimeError(
+            "Failed to produce a valid checkpoint. "
+            f"final_train_loss={final_train_loss}, "
+            f"final_valid_loss={final_valid_loss}, "
+            f"final_valid_rmse={final_valid_rmse}, "
+            f"best_valid_rmse={best_valid_rmse}, "
+            f"best_epoch={best_epoch}."
+        )
+
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+
+    return {
+        "final_train_loss": final_train_loss,
+        "final_valid_loss": final_valid_loss,
+        "final_valid_rmse": final_valid_rmse,
+        "best_valid_rmse": best_valid_rmse,
+        "best_epoch": best_epoch,
+        "train_size": int(train_data.y.shape[0]),
+        "valid_size": int(valid_data.y.shape[0]),
+        "model_path": str(checkpoint_path),
+    }
+
+if __name__ == "__main__":
+    import pandas as pd
+
+    class DummyTimeSeriesRegressor(nn.Module):
+        def __init__(self, lookback: int, n_features: int) -> None:
+            super().__init__()
+            self.flatten = nn.Flatten()
+            self.linear = nn.Linear(lookback * n_features, 1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x = self.flatten(x)
+            return self.linear(x)
+
+    rng = np.random.default_rng(42)
+
+    n_train = 200
+    n_valid = 50
+    lookback = 20
+    n_features = 8
+
+    X_train = rng.normal(size=(n_train, lookback, n_features)).astype(np.float32)
+    y_train = rng.normal(size=n_train).astype(np.float32)
+
+    X_valid = rng.normal(size=(n_valid, lookback, n_features)).astype(np.float32)
+    y_valid = rng.normal(size=n_valid).astype(np.float32)
+
+    train_data = BuiltDataset(
+        X=X_train,
+        y=y_train,
+        meta=pd.DataFrame({"sample_id": range(n_train)}),
+    )
+
+    valid_data = BuiltDataset(
+        X=X_valid,
+        y=y_valid,
+        meta=pd.DataFrame({"sample_id": range(n_valid)}),
+    )
+
+    model = DummyTimeSeriesRegressor(
+        lookback=lookback,
+        n_features=n_features,
+    )
+
+    config = TorchTrainConfig(
+        epochs=3,
+        batch_size=32,
+        learning_rate=1e-3,
+        device="cpu",
+    )
+
+    result = train_torch_model(
+        model=model,
+        train_data=train_data,
+        valid_data=valid_data,
+        output_dir="dataset/output/smoke_test",
+        config=config,
+    )
+
+    print(result)
