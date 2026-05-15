@@ -67,12 +67,12 @@ class PanelDatasetBuilder:
         seq_len: int = 60,
         meta_cols: Optional[Sequence[str]] = None,
     ) -> None:
-        self.feature_cols = feature_cols
+        self.feature_cols = list(feature_cols)
         self.target_col = target_col
         self.date_col = date_col
         self.stock_col = stock_col
         self.seq_len = seq_len
-        self.meta_cols = meta_cols if meta_cols is not None else []
+        self.meta_cols = list(meta_cols) if meta_cols is not None else []
 
         self._validate_config()
 

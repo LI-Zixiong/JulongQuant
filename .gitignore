@@ -239,5 +239,9 @@ dataset/output/
 *.ckpt
 *.model
 
+# Generated reports (keep folder)
+reports/*
+!reports/.gitkeep
+
 # Claude Code local settings
 .claude/
