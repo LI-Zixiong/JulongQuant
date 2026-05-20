@@ -4,16 +4,19 @@
 JulongQuant/
 │
 ├── dataset/              # Data storage
-│   ├── input/            #   Raw input data (parquet files)
-│   ├── processed/        #   Pre-processed factors
-│   └── output/           #   Model predictions & backtest results
+│   ├── input/            #   CSMAR raw data, teacher validation
+│   ├── processed/        #   factor_panel_12.parquet, daily raw panels
+│   └── output/           #   Experiment outputs & backtest results
 │
 ├── reports/              # Generated experiment reports
 │
 ├── scripts/              # Runnable entry points
 │   ├── check_data_to_model.py    End-to-end smoke test
 │   ├── run_experiment.py         Full experiment pipeline
-│   └── check_experiment.py       Output validation & baseline comparison
+│   ├── check_experiment.py       Output validation & baseline comparison
+│   ├── build_factor_panel.py     CSMAR → unified daily panel
+│   ├── calc_factors.py           12 factor + 2 targets computation
+│   └── select_stocks.py          Stock universe selection
 │
 ├── src/                  # Source code
 │   ├── data/             #   Data pipeline

@@ -311,6 +311,53 @@ def prediction_ic_summary(
         "rank_ic_positive_rate": rank_ic_stats["positive_ic_rate"],
     }
 
+def top_bottom_spread(
+    pred_df: pd.DataFrame,
+    date_col: str = "date",
+    y_true_col: str = "y_true",
+    y_pred_col: str = "y_pred",
+    top_frac: float = 0.1,
+    min_obs: int = 10,
+) -> dict[str, float]:
+    """
+    Per-date top vs bottom decile realized return spread.
+
+    For each date, selects the top and bottom `top_frac` stocks by
+    prediction, computes the mean realized return difference, and
+    reports the time-series mean and annualized Sharpe of that spread.
+    """
+    if not 0.0 < top_frac < 0.5:
+        raise ValueError(f"top_frac must be in (0, 0.5), got {top_frac}")
+
+    spreads: dict[pd.Timestamp, float] = {}
+
+    for date, group in pred_df.groupby(date_col, sort=True):
+        if len(group) < min_obs:
+            continue
+
+        n_select = max(int(len(group) * top_frac), 1)
+        top = group.nlargest(n_select, y_pred_col)
+        bot = group.nsmallest(n_select, y_pred_col)
+
+        spread = float(top[y_true_col].mean() - bot[y_true_col].mean())
+
+        if np.isfinite(spread):
+            spreads[pd.Timestamp(date)] = spread
+
+    if not spreads:
+        return {"spread_mean": 0.0, "spread_sharpe": 0.0, "spread_n_periods": 0}
+
+    series = pd.Series(spreads).sort_index()
+    mean_val = float(series.mean())
+    std_val = float(series.std(ddof=1))
+
+    return {
+        "spread_mean": mean_val,
+        "spread_sharpe": float(mean_val / std_val * np.sqrt(252)) if std_val > 0 else 0.0,
+        "spread_n_periods": len(series),
+    }
+
+
 if __name__ == "__main__":
     sample_returns = pd.Series(
         [0.01, -0.005, 0.02, -0.01, 0.015],

@@ -2,6 +2,7 @@
 Training utilities for PyTorch time-series models.
 """
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ class TorchTrainConfig:
     """
 
     epochs: int = 20
+    patience: int = 3
     batch_size: int = 256
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
@@ -28,6 +30,9 @@ class TorchTrainConfig:
     def __post_init__(self) -> None:
         if self.epochs <= 0:
             raise ValueError(f"Invalid epochs={self.epochs}. Expected a positive integer.")
+
+        if self.patience < 0:
+            raise ValueError(f"Invalid patience={self.patience}. Expected a non-negative integer.")
         
         if self.batch_size <= 0:
             raise ValueError(f"Invalid batch_size={self.batch_size}. Expected a positive integer.")
@@ -259,14 +264,21 @@ def train_torch_model(
     model_name = model.__class__.__name__
     checkpoint_path = output_dir / f"{model_name}.pt"
 
+    MIN_DELTA = 1e-6
+
     best_valid_rmse = float("inf")
     best_epoch = -1
+    epochs_without_improvement = 0
 
     final_train_loss = float("nan")
     final_valid_loss = float("nan")
     final_valid_rmse = float("nan")
 
+    t_start = time.perf_counter()
+
     for epoch in range(1, config.epochs + 1):
+        t_epoch = time.perf_counter()
+
         train_loss = _train_one_epoch(
             model=model,
             dataloader=train_loader,
@@ -287,12 +299,36 @@ def train_torch_model(
         final_valid_rmse = valid_rmse
 
         if not np.isfinite(valid_rmse):
+            epochs_without_improvement += 1
             continue
 
-        if valid_rmse < best_valid_rmse:
+        if valid_rmse < best_valid_rmse - MIN_DELTA:
             best_valid_rmse = valid_rmse
             best_epoch = epoch
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), checkpoint_path)
+        else:
+            epochs_without_improvement += 1
+
+        epoch_time = time.perf_counter() - t_epoch
+        elapsed = time.perf_counter() - t_start
+        print(
+            f"[{model_name}  epoch {epoch:>3}/{config.epochs}] "
+            f"train_loss={train_loss:.6f}  valid_rmse={valid_rmse:.6f}  "
+            f"best_rmse={best_valid_rmse:.6f} @epoch {best_epoch:<3}  "
+            f"epoch={epoch_time:.1f}s  elapsed={elapsed:.1f}s"
+        )
+
+        if config.patience > 0 and epochs_without_improvement >= config.patience:
+            print(
+                f"[{model_name}] early stop: no improvement for "
+                f"{config.patience} epochs (min_delta={MIN_DELTA})"
+            )
+            break
+
+    # Restore best checkpoint weights
+    if best_epoch >= 1 and checkpoint_path.exists():
+        model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
 
     if best_epoch < 1 or not checkpoint_path.exists():
         raise RuntimeError(

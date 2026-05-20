@@ -1,13 +1,13 @@
 """
-Run a single-model end-to-end experiment.
+Run a multi-model end-to-end experiment.
 
-Phase 2A goal:
-raw data -> preprocess -> dataset -> train -> predict -> backtest -> report
+Phase 2B goal:
+raw data -> preprocess -> dataset -> train -> predict -> backtest -> compare models
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -17,9 +17,19 @@ from src.backtest.portfolio import PortfolioConfig
 from src.data.dataset_builder import PanelDatasetBuilder
 from src.data.loader import load_panel_data
 from src.data.preprocess import PreprocessConfig, preprocess_panel_data
+from src.models.dlinear import DLinearConfig, build_dlinear_model
+from src.models.itransformer import ITransformerConfig, build_itransformer_model
 from src.models.lightgbm_model import LightGBMConfig, build_lightgbm_model
-from src.predict.generate_predictions import generate_predictions, save_predictions
+from src.models.patchtst import PatchTSTConfig, build_patchtst_model
+from src.models.tsmixer import TSMixerConfig, build_tsmixer_model
+from src.models.xgboost_model import XGBoostConfig, build_xgboost_model
+from src.predict.generate_predictions import (
+    PredictionConfig,
+    generate_predictions,
+    save_predictions,
+)
 from src.train.train_tabular import train_tabular_model
+from src.train.train_torch import TorchTrainConfig, train_torch_model
 from src.utils.seed import set_seed
 
 
@@ -41,15 +51,24 @@ DEFAULT_FEATURE_COLS = (
 
 @dataclass
 class ExperimentConfig:
-    data_path: str = "dataset/input/A_2010_2020.parquet"
+    data_path: str = "dataset/processed/factor_panel_12.parquet"
 
     date_col: str = "time"
     stock_col: str = "stock_id"
-    target_col: str = "1d_next_raw"
+    target_col: str = "5d_next_raw"
     return_col: str = "return_1d"
+    backtest_return_source: str = "1d_next_raw"
 
-    feature_cols: Sequence[str] = DEFAULT_FEATURE_COLS
-    meta_cols: Sequence[str] = ("industry_code", "price")
+    feature_cols: Sequence[str] = (
+        "SIZE", "SIZENL", "LIQUIDITY", "BETA", "RESVOL",
+        "MOMENTUM", "LTREV", "STREV", "LEVERAGE", "VALUE",
+        "EARNYLD", "GROWTH",
+    )
+    meta_cols: Sequence[str] = ("industry_csrc_2012", "list_date")
+
+    model_names: Sequence[str] = (
+        "lightgbm", "dlinear"
+    )
 
     train_end: str = ""
     valid_end: str = ""
@@ -57,6 +76,15 @@ class ExperimentConfig:
     seed: int = 42
     top_n: int = 50
     periods_per_year: int = 252
+
+    seq_len: int = 60
+    torch_epochs: int = 5
+    torch_patience: int = 1
+    torch_batch_size: int = 4096
+    torch_learning_rate: float = 1e-3
+    torch_weight_decay: float = 1e-5
+    torch_device: str = "auto"
+    predict_batch_size: int = 8192
 
     output_dir: str = "dataset/output/experiment_001"
     report_path: str = "reports/experiment_001.md"
@@ -213,22 +241,174 @@ def build_returns_frame_from_next_target(
     return returns_df
 
 
+def get_model_family(model_name: str) -> str:
+    """Return the model family used by the experiment runner."""
+    normalized_name = model_name.lower()
+
+    if normalized_name in {"lightgbm", "xgboost"}:
+        return "tabular"
+
+    if normalized_name in {"dlinear", "itransformer", "patchtst", "tsmixer"}:
+        return "torch"
+
+    raise ValueError(f"Unsupported model_name: {model_name}")
+
+
+def build_experiment_model(
+    model_name: str,
+    seed: int,
+    seq_len: int,
+    n_features: int,
+) -> Any:
+    """Build one experiment model by name."""
+    normalized_name = model_name.lower()
+
+    if normalized_name == "lightgbm":
+        return build_lightgbm_model(
+            LightGBMConfig(
+                n_estimators=500,
+                learning_rate=0.03,
+                num_leaves=31,
+                early_stopping_rounds=50,
+                verbose_eval=False,
+                random_state=seed,
+            )
+        )
+
+    if normalized_name == "xgboost":
+        return build_xgboost_model(
+            XGBoostConfig(
+                n_estimators=500,
+                max_depth=6,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.0,
+                reg_lambda=1.0,
+                random_state=seed,
+                n_jobs=-1,
+            )
+        )
+
+    if normalized_name == "dlinear":
+        return build_dlinear_model(
+            DLinearConfig(
+                seq_len=seq_len,
+                n_features=n_features,
+                moving_avg_kernel=25,
+                dropout=0.1,
+            )
+        )
+
+    if normalized_name == "itransformer":
+        return build_itransformer_model(
+            ITransformerConfig(
+                seq_len=seq_len,
+                n_features=n_features,
+                d_model=128,
+                nhead=4,
+                num_layers=2,
+                dim_feedforward=256,
+                dropout=0.1,
+            )
+        )
+
+    if normalized_name == "patchtst":
+        return build_patchtst_model(
+            PatchTSTConfig(
+                seq_len=seq_len,
+                n_features=n_features,
+                patch_len=8,
+                stride=4,
+                d_model=128,
+                nhead=4,
+                num_layers=2,
+                dim_feedforward=256,
+                dropout=0.1,
+            )
+        )
+
+    if normalized_name == "tsmixer":
+        return build_tsmixer_model(
+            TSMixerConfig(
+                seq_len=seq_len,
+                n_features=n_features,
+                num_blocks=2,
+                dropout=0.1,
+            )
+        )
+
+    raise ValueError(f"Unsupported model_name: {model_name}")
+
+
+def _format_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.6f}"
+
+    return str(value)
+
+
+def _extract_train_rmse(train_summary: dict[str, Any]) -> float | None:
+    if train_summary.get("train_rmse") is not None:
+        return float(train_summary["train_rmse"])
+
+    final_train_loss = train_summary.get("final_train_loss")
+    if final_train_loss is None:
+        return None
+
+    final_train_loss = float(final_train_loss)
+    if not np.isfinite(final_train_loss) or final_train_loss < 0.0:
+        return None
+
+    return float(np.sqrt(final_train_loss))
+
+
+def _extract_valid_rmse(train_summary: dict[str, Any]) -> float | None:
+    for key in ("valid_rmse", "best_valid_rmse", "final_valid_rmse"):
+        if train_summary.get(key) is not None:
+            return float(train_summary[key])
+
+    return None
+
+
+def _build_model_comparison_df(model_results: dict[str, dict[str, Any]]) -> pd.DataFrame:
+    comparison_rows = []
+
+    for model_name, result in model_results.items():
+        summary = result["backtest_summary"]
+        train_summary = result["train_summary"]
+
+        comparison_rows.append(
+            {
+                "model": model_name,
+                "model_family": result.get("model_family"),
+                "train_rmse": _extract_train_rmse(train_summary),
+                "valid_rmse": _extract_valid_rmse(train_summary),
+                "sharpe_ratio": summary["sharpe_ratio"],
+                "annualized_return": summary["annualized_return"],
+                "max_drawdown": summary["max_drawdown"],
+                "hit_rate": summary.get("hit_rate"),
+                "final_nav": summary["final_nav"],
+                "mean_turnover": summary["mean_turnover"],
+            }
+        )
+
+    return pd.DataFrame(comparison_rows)
+
+
 def save_markdown_report(
     report_path: str | Path,
     config: ExperimentConfig,
     preprocess_report: dict,
-    train_summary: dict,
-    backtest_result: dict,
-    pred_df: pd.DataFrame,
     split_sizes: dict[str, int],
+    model_results: dict[str, dict[str, Any]],
+    comparison_df: pd.DataFrame,
 ) -> Path:
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    summary = backtest_result["summary"]
-
     lines = [
-        "# Experiment 001: LightGBM End-to-End Backtest",
+        "# Experiment 001: Multi-Model Comparison",
         "",
         "## Config",
         "",
@@ -236,8 +416,12 @@ def save_markdown_report(
         f"- date_col: `{config.date_col}`",
         f"- stock_col: `{config.stock_col}`",
         f"- target_col: `{config.target_col}`",
+        f"- split: `70/10/20 by unique dates`",
+        f"- seq_len: `{config.seq_len}`",
+        f"- torch_epochs: `{config.torch_epochs}`",
         f"- train_end: `{config.train_end}`",
         f"- valid_end: `{config.valid_end}`",
+        f"- models: `{', '.join(config.model_names)}`",
         f"- top_n: `{config.top_n}`",
         "",
         "## Data Summary",
@@ -247,34 +431,65 @@ def save_markdown_report(
         f"- train rows: {split_sizes['train_rows']}",
         f"- valid rows: {split_sizes['valid_rows']}",
         f"- test rows: {split_sizes['test_rows']}",
-        f"- prediction rows: {len(pred_df)}",
-        (
-            f"- prediction date range: "
-            f"{pred_df[config.date_col].min()} to {pred_df[config.date_col].max()}"
-        ),
         "",
-        "## Training Summary",
+        "## Model Comparison",
         "",
+        "| Model | Family | Train RMSE | Valid RMSE | Sharpe | Ann. Return | MaxDD | Hit Rate | Final NAV | Mean Turnover |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
-    for key, value in train_summary.items():
-        lines.append(f"- {key}: {value}")
+    for _, row in comparison_df.iterrows():
+        lines.append(
+            "| "
+            f"{row['model']} | "
+            f"{row['model_family']} | "
+            f"{_format_value(row['train_rmse'])} | "
+            f"{_format_value(row['valid_rmse'])} | "
+            f"{_format_value(row['sharpe_ratio'])} | "
+            f"{_format_value(row['annualized_return'])} | "
+            f"{_format_value(row['max_drawdown'])} | "
+            f"{_format_value(row['hit_rate'])} | "
+            f"{_format_value(row['final_nav'])} | "
+            f"{_format_value(row['mean_turnover'])} |"
+        )
 
-    lines.extend(
-        [
-            "",
-            "## Backtest Summary",
-            "",
-            "| Metric | Value |",
-            "|---|---:|",
-        ]
-    )
+    for model_name, result in model_results.items():
+        train_summary = result["train_summary"]
+        backtest_summary = result["backtest_summary"]
 
-    for key, value in summary.items():
-        if isinstance(value, float):
-            lines.append(f"| {key} | {value:.6f} |")
-        else:
-            lines.append(f"| {key} | {value} |")
+        lines.extend(
+            [
+                "",
+                f"## {model_name} Details",
+                "",
+                "### Output Files",
+                "",
+                f"- prediction_path: `{result['prediction_path']}`",
+                f"- daily_returns_path: `{result['daily_returns_path']}`",
+                f"- daily_nav_path: `{result['daily_nav_path']}`",
+                f"- daily_weights_path: `{result['daily_weights_path']}`",
+                f"- daily_turnover_path: `{result['daily_turnover_path']}`",
+                "",
+                "### Training Summary",
+                "",
+            ]
+        )
+
+        for key, value in train_summary.items():
+            lines.append(f"- {key}: {value}")
+
+        lines.extend(
+            [
+                "",
+                "### Backtest Summary",
+                "",
+                "| Metric | Value |",
+                "|---|---:|",
+            ]
+        )
+
+        for key, value in backtest_summary.items():
+            lines.append(f"| {key} | {_format_value(value)} |")
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -334,49 +549,15 @@ def main() -> None:
         target_col=config.target_col,
         date_col=config.date_col,
         stock_col=config.stock_col,
-        seq_len=60,
+        seq_len=config.seq_len,
         meta_cols=list(config.meta_cols),
-    )
-
-    train_data = builder.build_tabular_dataset(train_df)
-    valid_data = builder.build_tabular_dataset(valid_df)
-    test_data = builder.build_tabular_dataset(test_df)
-
-    model = build_lightgbm_model(
-        LightGBMConfig(
-            n_estimators=500,
-            learning_rate=0.03,
-            num_leaves=31,
-            early_stopping_rounds=50,
-            verbose_eval=False,
-            random_state=config.seed,
-        )
-    )
-
-    train_summary = train_tabular_model(
-        model=model,
-        train_data=train_data,
-        valid_data=valid_data,
-        output_dir=output_dir / "models",
-    )
-
-    pred_df = generate_predictions(
-        model=model,
-        dataset=test_data,
-        model_name="lightgbm",
-        required_meta_cols=(config.date_col, config.stock_col),
-    )
-
-    prediction_path = save_predictions(
-        pred_df=pred_df,
-        output_path=output_dir / "predictions_lightgbm.parquet",
     )
 
     returns_df = build_returns_frame_from_next_target(
         df=clean_df,
         date_col=config.date_col,
         stock_col=config.stock_col,
-        target_col=config.target_col,
+        target_col=config.backtest_return_source,
         return_col=config.return_col,
     )
 
@@ -387,52 +568,189 @@ def main() -> None:
         stock_col=config.stock_col,
     )
 
-    backtest_result = run_backtest(
-        pred_df=pred_df,
-        returns_df=returns_df,
-        portfolio_config=portfolio_config,
-        return_col=config.return_col,
-        date_col=config.date_col,
-        stock_col=config.stock_col,
-        periods_per_year=config.periods_per_year,
-    )
+    model_results: dict[str, dict[str, Any]] = {}
+    tabular_names = [n for n in config.model_names if get_model_family(n) == "tabular"]
+    torch_names = [n for n in config.model_names if get_model_family(n) == "torch"]
 
-    backtest_result["daily_returns"].to_csv(
-        output_dir / "daily_returns_lightgbm.csv",
-        header=True,
-    )
+    # ----- phase 1: tabular models (low memory) -----
+    if tabular_names:
+        tabular_train_data = builder.build_tabular_dataset(train_df)
+        tabular_valid_data = builder.build_tabular_dataset(valid_df)
+        tabular_test_data = builder.build_tabular_dataset(test_df)
 
-    backtest_result["daily_nav"].to_csv(
-        output_dir / "daily_nav_lightgbm.csv",
-        header=True,
-    )
+        for model_name in tabular_names:
+            print(f"\nRunning model: {model_name}")
 
-    backtest_result["daily_weights"].to_csv(
-        output_dir / "daily_weights_lightgbm.csv",
-    )
+            model = build_experiment_model(
+                model_name=model_name,
+                seed=config.seed,
+                seq_len=config.seq_len,
+                n_features=len(config.feature_cols),
+            )
 
-    backtest_result["daily_turnover"].to_csv(
-        output_dir / "daily_turnover_lightgbm.csv",
-        header=True,
-    )
+            train_summary = train_tabular_model(
+                model=model,
+                train_data=tabular_train_data,
+                valid_data=tabular_valid_data,
+                output_dir=output_dir / "models",
+            )
+
+            pred_df = generate_predictions(
+                model=model,
+                dataset=tabular_test_data,
+                model_name=model_name,
+                required_meta_cols=(config.date_col, config.stock_col),
+            )
+
+            prediction_path = save_predictions(
+                pred_df=pred_df,
+                output_path=output_dir / f"predictions_{model_name}.parquet",
+            )
+
+            backtest_result = run_backtest(
+                pred_df=pred_df,
+                returns_df=returns_df,
+                portfolio_config=portfolio_config,
+                return_col=config.return_col,
+                date_col=config.date_col,
+                stock_col=config.stock_col,
+                periods_per_year=config.periods_per_year,
+            )
+
+            daily_returns_path = output_dir / f"daily_returns_{model_name}.csv"
+            daily_nav_path = output_dir / f"daily_nav_{model_name}.csv"
+            daily_weights_path = output_dir / f"daily_weights_{model_name}.csv"
+            daily_turnover_path = output_dir / f"daily_turnover_{model_name}.csv"
+
+            backtest_result["daily_returns"].to_csv(daily_returns_path, header=True)
+            backtest_result["daily_nav"].to_csv(daily_nav_path, header=True)
+            backtest_result["daily_weights"].to_csv(daily_weights_path)
+            backtest_result["daily_turnover"].to_csv(daily_turnover_path, header=True)
+
+            model_results[model_name] = {
+                "model_family": "tabular",
+                "train_summary": train_summary,
+                "backtest_summary": backtest_result["summary"],
+                "prediction_path": str(prediction_path),
+                "daily_returns_path": str(daily_returns_path),
+                "daily_nav_path": str(daily_nav_path),
+                "daily_weights_path": str(daily_weights_path),
+                "daily_turnover_path": str(daily_turnover_path),
+            }
+
+            print(f"{model_name} completed.")
+            print(backtest_result["summary"])
+
+        # Release tabular datasets before building heavy sequence data
+        del tabular_train_data, tabular_valid_data, tabular_test_data
+
+    # ----- phase 2: torch models (build sequence data on demand) -----
+    if torch_names:
+        print("\nBuilding sequence datasets for PyTorch models...")
+
+        sequence_train_data = builder.build_sequence_dataset(train_df)
+        sequence_valid_data = builder.build_sequence_dataset(valid_df)
+        sequence_test_data = builder.build_sequence_dataset(test_df)
+
+        prediction_config = PredictionConfig(
+            batch_size=config.predict_batch_size,
+            device=config.torch_device,
+        )
+
+        for model_name in torch_names:
+            print(f"\nRunning model: {model_name}")
+
+            model = build_experiment_model(
+                model_name=model_name,
+                seed=config.seed,
+                seq_len=config.seq_len,
+                n_features=len(config.feature_cols),
+            )
+
+            train_summary = train_torch_model(
+                model=model,
+                train_data=sequence_train_data,
+                valid_data=sequence_valid_data,
+                output_dir=output_dir / "models",
+                config=TorchTrainConfig(
+                    epochs=config.torch_epochs,
+                    patience=config.torch_patience,
+                    batch_size=config.torch_batch_size,
+                    learning_rate=config.torch_learning_rate,
+                    weight_decay=config.torch_weight_decay,
+                    device=config.torch_device,
+                ),
+            )
+
+            pred_df = generate_predictions(
+                model=model,
+                dataset=sequence_test_data,
+                model_name=model_name,
+                config=prediction_config,
+                required_meta_cols=(config.date_col, config.stock_col),
+            )
+
+            prediction_path = save_predictions(
+                pred_df=pred_df,
+                output_path=output_dir / f"predictions_{model_name}.parquet",
+            )
+
+            backtest_result = run_backtest(
+                pred_df=pred_df,
+                returns_df=returns_df,
+                portfolio_config=portfolio_config,
+                return_col=config.return_col,
+                date_col=config.date_col,
+                stock_col=config.stock_col,
+                periods_per_year=config.periods_per_year,
+            )
+
+            daily_returns_path = output_dir / f"daily_returns_{model_name}.csv"
+            daily_nav_path = output_dir / f"daily_nav_{model_name}.csv"
+            daily_weights_path = output_dir / f"daily_weights_{model_name}.csv"
+            daily_turnover_path = output_dir / f"daily_turnover_{model_name}.csv"
+
+            backtest_result["daily_returns"].to_csv(daily_returns_path, header=True)
+            backtest_result["daily_nav"].to_csv(daily_nav_path, header=True)
+            backtest_result["daily_weights"].to_csv(daily_weights_path)
+            backtest_result["daily_turnover"].to_csv(daily_turnover_path, header=True)
+
+            model_results[model_name] = {
+                "model_family": "torch",
+                "train_summary": train_summary,
+                "backtest_summary": backtest_result["summary"],
+                "prediction_path": str(prediction_path),
+                "daily_returns_path": str(daily_returns_path),
+                "daily_nav_path": str(daily_nav_path),
+                "daily_weights_path": str(daily_weights_path),
+                "daily_turnover_path": str(daily_turnover_path),
+            }
+
+            print(f"{model_name} completed.")
+            print(backtest_result["summary"])
+
+    comparison_df = _build_model_comparison_df(model_results)
+    comparison_path = output_dir / "model_comparison.csv"
+    comparison_df.to_csv(comparison_path, index=False)
 
     report_path = save_markdown_report(
         report_path=config.report_path,
         config=config,
         preprocess_report=preprocess_result.report,
-        train_summary=train_summary,
-        backtest_result=backtest_result,
-        pred_df=pred_df,
         split_sizes=split_sizes,
+        model_results=model_results,
+        comparison_df=comparison_df,
     )
 
-    print("Experiment completed.")
-    print(f"Predictions saved to: {prediction_path}")
-    print(f"Report saved to: {report_path}")
+    print("\nExperiment completed.")
+    print(f"Training target:  {config.target_col}")
+    print(f"Backtest return: {config.backtest_return_source} -> {config.return_col}")
     print("Split sizes:")
     print(split_sizes)
-    print("Backtest summary:")
-    print(backtest_result["summary"])
+    print("\nModel comparison:")
+    print(comparison_df)
+    print(f"\nModel comparison saved to: {comparison_path}")
+    print(f"Report saved to: {report_path}")
 
 
 if __name__ == "__main__":
