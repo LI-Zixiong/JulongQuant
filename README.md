@@ -16,7 +16,8 @@ JulongQuant/
 │   ├── check_experiment.py       Output validation & baseline comparison
 │   ├── build_factor_panel.py     CSMAR → unified daily panel
 │   ├── calc_factors.py           12 factor + 2 targets computation
-│   └── select_stocks.py          Stock universe selection
+│   ├── select_stocks.py          Stock universe selection
+│   └── ensemble.py               5-model ensemble & comparison
 │
 ├── src/                  # Source code
 │   ├── data/             #   Data pipeline

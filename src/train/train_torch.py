@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -156,7 +157,7 @@ def _evaluate(
     data_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device
-) -> tuple[float, float]:
+) -> tuple[float, float, np.ndarray, np.ndarray]:
     model.eval()
 
     total_loss = 0.0
@@ -190,7 +191,7 @@ def _evaluate(
     loss_avg = total_loss / total_samples if total_samples > 0 else 0.0
     rmse = _rmse(y_true, y_pred)
 
-    return loss_avg, rmse
+    return loss_avg, rmse, y_true, y_pred
 
 def train_torch_model(
     model: nn.Module,
@@ -267,7 +268,9 @@ def train_torch_model(
     MIN_DELTA = 1e-6
 
     best_valid_rmse = float("inf")
-    best_epoch = -1
+    best_rmse_epoch = -1
+    best_ric = -np.inf
+    best_ric_epoch = -1
     epochs_without_improvement = 0
 
     final_train_loss = float("nan")
@@ -275,6 +278,8 @@ def train_torch_model(
     final_valid_rmse = float("nan")
 
     t_start = time.perf_counter()
+
+    ric_checkpoint_path = output_dir / f"{model_name}_best_ric.pt"
 
     for epoch in range(1, config.epochs + 1):
         t_epoch = time.perf_counter()
@@ -287,12 +292,18 @@ def train_torch_model(
             device=device
         )
 
-        valid_loss, valid_rmse = _evaluate(
+        valid_loss, valid_rmse, y_true, y_pred = _evaluate(
             model=model,
             data_loader=valid_loader,
             criterion=criterion,
             device=device
         )
+
+        eval_df = pd.DataFrame({"y_true": y_true, "y_pred": y_pred})
+        rank_ic = eval_df["y_true"].corr(eval_df["y_pred"], method="spearman")
+        valid_ret_mean = float(np.mean(y_pred))
+        valid_ret_std = float(np.std(y_pred))
+        valid_sharpe = float(valid_ret_mean / valid_ret_std * np.sqrt(252)) if valid_ret_std > 0 else 0.0
 
         final_train_loss = train_loss
         final_valid_loss = valid_loss
@@ -304,18 +315,25 @@ def train_torch_model(
 
         if valid_rmse < best_valid_rmse - MIN_DELTA:
             best_valid_rmse = valid_rmse
-            best_epoch = epoch
+            best_rmse_epoch = epoch
             epochs_without_improvement = 0
             torch.save(model.state_dict(), checkpoint_path)
         else:
             epochs_without_improvement += 1
+
+        if np.isfinite(rank_ic) and rank_ic > best_ric:
+            best_ric = rank_ic
+            best_ric_epoch = epoch
+            torch.save(model.state_dict(), ric_checkpoint_path)
 
         epoch_time = time.perf_counter() - t_epoch
         elapsed = time.perf_counter() - t_start
         print(
             f"[{model_name}  epoch {epoch:>3}/{config.epochs}] "
             f"train_loss={train_loss:.6f}  valid_rmse={valid_rmse:.6f}  "
-            f"best_rmse={best_valid_rmse:.6f} @epoch {best_epoch:<3}  "
+            f"rIC={rank_ic:.4f}  vSharpe={valid_sharpe:+.3f}  "
+            f"best_rmse={best_valid_rmse:.6f} @epoch {best_rmse_epoch:<3}  "
+            f"best_rIC={best_ric:.4f} @epoch {best_ric_epoch}  "
             f"epoch={epoch_time:.1f}s  elapsed={elapsed:.1f}s"
         )
 
@@ -326,31 +344,33 @@ def train_torch_model(
             )
             break
 
-    # Restore best checkpoint weights
-    if best_epoch >= 1 and checkpoint_path.exists():
-        model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+    # Use rIC-best checkpoint for prediction
+    use_checkpoint = ric_checkpoint_path if (best_ric_epoch >= 1 and ric_checkpoint_path.exists()) else checkpoint_path
+    use_epoch = best_ric_epoch if (best_ric_epoch >= 1 and ric_checkpoint_path.exists()) else best_rmse_epoch
 
-    if best_epoch < 1 or not checkpoint_path.exists():
+    if use_epoch < 1 or not use_checkpoint.exists():
         raise RuntimeError(
             "Failed to produce a valid checkpoint. "
             f"final_train_loss={final_train_loss}, "
             f"final_valid_loss={final_valid_loss}, "
             f"final_valid_rmse={final_valid_rmse}, "
             f"best_valid_rmse={best_valid_rmse}, "
-            f"best_epoch={best_epoch}."
+            f"best_rmse_epoch={best_rmse_epoch}."
         )
 
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model.load_state_dict(torch.load(use_checkpoint, map_location=device))
 
     return {
         "final_train_loss": final_train_loss,
         "final_valid_loss": final_valid_loss,
         "final_valid_rmse": final_valid_rmse,
         "best_valid_rmse": best_valid_rmse,
-        "best_epoch": best_epoch,
+        "best_rmse_epoch": best_rmse_epoch,
+        "best_ric": best_ric,
+        "best_ric_epoch": best_ric_epoch,
         "train_size": int(train_data.y.shape[0]),
         "valid_size": int(valid_data.y.shape[0]),
-        "model_path": str(checkpoint_path),
+        "model_path": str(use_checkpoint),
     }
 
 if __name__ == "__main__":

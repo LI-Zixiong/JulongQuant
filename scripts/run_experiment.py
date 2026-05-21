@@ -5,6 +5,7 @@ Phase 2B goal:
 raw data -> preprocess -> dataset -> train -> predict -> backtest -> compare models
 """
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -51,7 +52,7 @@ DEFAULT_FEATURE_COLS = (
 
 @dataclass
 class ExperimentConfig:
-    data_path: str = "dataset/processed/factor_panel_12.parquet"
+    data_path: str = "dataset/processed/factor_panel_1500.parquet"
 
     date_col: str = "time"
     stock_col: str = "stock_id"
@@ -67,7 +68,7 @@ class ExperimentConfig:
     meta_cols: Sequence[str] = ("industry_csrc_2012", "list_date")
 
     model_names: Sequence[str] = (
-        "lightgbm", "dlinear"
+        "lightgbm", "xgboost",
     )
 
     train_end: str = ""
@@ -77,13 +78,19 @@ class ExperimentConfig:
     top_n: int = 50
     periods_per_year: int = 252
 
-    seq_len: int = 60
-    torch_epochs: int = 5
+    seq_len: int = 20
+    torch_epochs: int = 10
     torch_patience: int = 1
     torch_batch_size: int = 4096
-    torch_learning_rate: float = 1e-3
-    torch_weight_decay: float = 1e-5
+    torch_learning_rate: float = 7.5e-4
+    torch_weight_decay: float = 0.0
     torch_device: str = "auto"
+
+    model_params: dict = dataclasses.field(default_factory=lambda: {
+        "dlinear":      {"seq_len": 15, "epochs": 10, "lr": 7.5e-4,   "wd": 0.0, "patience": 2},
+        "itransformer": {"seq_len": 40, "epochs": 5,  "lr": 5e-4,   "wd": 0.0},
+        "tsmixer":      {"seq_len": 40, "epochs": 15, "lr": 4e-3,   "wd": 0.0, "patience": 2},
+    })
     predict_batch_size: int = 8192
 
     output_dir: str = "dataset/output/experiment_001"
@@ -241,6 +248,14 @@ def build_returns_frame_from_next_target(
     return returns_df
 
 
+def _get_model_params(model_name: str, config: ExperimentConfig) -> dict:
+    defaults = {"seq_len": config.seq_len, "epochs": config.torch_epochs,
+                "lr": config.torch_learning_rate, "wd": config.torch_weight_decay}
+    overrides = config.model_params.get(model_name, {})
+    defaults.update(overrides)
+    return defaults
+
+
 def get_model_family(model_name: str) -> str:
     """Return the model family used by the experiment runner."""
     normalized_name = model_name.lower()
@@ -279,8 +294,8 @@ def build_experiment_model(
         return build_xgboost_model(
             XGBoostConfig(
                 n_estimators=500,
-                max_depth=6,
-                learning_rate=0.03,
+                max_depth=5,
+                learning_rate=0.01,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 reg_alpha=0.0,
@@ -644,47 +659,54 @@ def main() -> None:
         # Release tabular datasets before building heavy sequence data
         del tabular_train_data, tabular_valid_data, tabular_test_data
 
-    # ----- phase 2: torch models (build sequence data on demand) -----
+    # ----- phase 2: torch models (build sequence data per seq_len group) -----
     if torch_names:
-        print("\nBuilding sequence datasets for PyTorch models...")
-
-        sequence_train_data = builder.build_sequence_dataset(train_df)
-        sequence_valid_data = builder.build_sequence_dataset(valid_df)
-        sequence_test_data = builder.build_sequence_dataset(test_df)
+        seq_groups = {}
+        for model_name in torch_names:
+            p = _get_model_params(model_name, config)
+            seq_groups.setdefault(p["seq_len"], []).append(model_name)
 
         prediction_config = PredictionConfig(
             batch_size=config.predict_batch_size,
             device=config.torch_device,
         )
 
-        for model_name in torch_names:
-            print(f"\nRunning model: {model_name}")
+        for sl, models in seq_groups.items():
+            print(f"\nBuilding sequence datasets (seq_len={sl}) for: {', '.join(models)}...")
+            builder.seq_len = sl
+            seq_train = builder.build_sequence_dataset(train_df)
+            seq_valid = builder.build_sequence_dataset(valid_df)
+            seq_test = builder.build_sequence_dataset(test_df)
 
-            model = build_experiment_model(
-                model_name=model_name,
-                seed=config.seed,
-                seq_len=config.seq_len,
-                n_features=len(config.feature_cols),
-            )
+            for model_name in models:
+                print(f"\nRunning model: {model_name}")
+                p = _get_model_params(model_name, config)
 
-            train_summary = train_torch_model(
-                model=model,
-                train_data=sequence_train_data,
-                valid_data=sequence_valid_data,
-                output_dir=output_dir / "models",
-                config=TorchTrainConfig(
-                    epochs=config.torch_epochs,
-                    patience=config.torch_patience,
-                    batch_size=config.torch_batch_size,
-                    learning_rate=config.torch_learning_rate,
-                    weight_decay=config.torch_weight_decay,
-                    device=config.torch_device,
-                ),
-            )
+                model = build_experiment_model(
+                    model_name=model_name,
+                    seed=config.seed,
+                    seq_len=p["seq_len"],
+                    n_features=len(config.feature_cols),
+                )
+
+                train_summary = train_torch_model(
+                    model=model,
+                    train_data=seq_train,
+                    valid_data=seq_valid,
+                    output_dir=output_dir / "models",
+                    config=TorchTrainConfig(
+                        epochs=p["epochs"],
+                        patience=p.get("patience", config.torch_patience),
+                        batch_size=config.torch_batch_size,
+                        learning_rate=p["lr"],
+                        weight_decay=p["wd"],
+                        device=config.torch_device,
+                    ),
+                )
 
             pred_df = generate_predictions(
                 model=model,
-                dataset=sequence_test_data,
+                dataset=seq_test,
                 model_name=model_name,
                 config=prediction_config,
                 required_meta_cols=(config.date_col, config.stock_col),
